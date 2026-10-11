@@ -1,0 +1,31 @@
+[package]
+name = "qymcad-mcp"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Ravva/qymcad-mcp"
+description = "Headless recipe engine and stdio JSON-RPC bridge for AI agents: build and measure QymCAD documents without the window"
+
+[[bin]]
+name = "qymcad-mcp"
+path = "src/main.rs"
+
+# The document model, the kernel and the file format come from QymCAD itself, pinned
+# to one upstream revision on purpose: the `.qcad` format changes without backward
+# compatibility, so the pin moves only as a deliberate decision after re-testing.
+[dependencies]
+qymcad-core = { git = "https://github.com/QymIs-Tech/QymCAD", rev = "0bd16a6" }
+qymcad-kernel = { git = "https://github.com/QymIs-Tech/QymCAD", rev = "0bd16a6" }
+qymcad-io = { git = "https://github.com/QymIs-Tech/QymCAD", rev = "0bd16a6" }
+qymcad-testkit = { git = "https://github.com/QymIs-Tech/QymCAD", rev = "0bd16a6" }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+serde_json = "1.0.151"
+
+[lints.rust]
+dead_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = "deny"
