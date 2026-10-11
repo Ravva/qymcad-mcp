@@ -69,6 +69,13 @@ body). All sizes are finite positive millimetres; a refusal names its field
 Answer: one body of 12000 mm^3 with its bounding box and triangle count. A saved
 `.qcad` opens in QymCAD via File → Open and rebuilds parametrically.
 
+## Troubleshooting
+
+`io-open-error` with `Unexpected variant named ... in enum ...` when opening a saved
+`.qcad` in QymCAD means the app build is older than the file: RON ignores unknown
+fields but refuses unknown enum variants, and the format carries no compatibility
+layer. Update QymCAD to a build at or past the pinned revision above.
+
 ## Notes
 
 - Live B-rep shapes never leave the process; only numbers and files cross the wire.
