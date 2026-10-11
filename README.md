@@ -63,10 +63,14 @@ build bodies of revolution) and `HoleSketch` (one isolated point — keep clear 
 origin and other geometry, which weld the point into themselves); `Extrude`/`Revolve`
 (about X or Y)/`Cut`/`Boss`; dress-ups `Fillet`/`Chamfer` on every edge; `Hole` (drills
 up from the sketch plane into the stock standing above it); `LinearArray` (at most
-1000 copies); `Mirror` about a world plane, merged; `Translate`.
+1000 copies) and `CircularArray` about world Z; `Mirror` about a world plane, merged;
+`Translate`; `Level` (later sketches stand on datum planes at this height) with `Loft`
+through the last sections; `SplitBody` by a world plane (convex stock parts into two);
+`ImportStep` (a STEP/IGES file in as new parts).
 All sizes are finite positive millimetres; a refusal names its field
-(`mcp-rect-size`, `mcp-extrude-without-sketch`, ...). Shells need picked faces, which a
-headless recipe has no way to point at, so there is no shell op.
+(`mcp-rect-size`, `mcp-extrude-without-sketch`, ...). Shells need picked faces, sweep
+needs a path sketch, and the renderer is bound to the window — so no shell, sweep or
+picture-preview ops.
 
 ## Example
 
@@ -92,7 +96,8 @@ layer. Update QymCAD to a build at or past the pinned revision above.
 - Live B-rep shapes never leave the process; only numbers and files cross the wire.
 - Error codes are machine-readable English keys, no interface strings.
 - Checks: `cargo test` (every op holds its volume, refusals name their cause,
-  a saved document opens back), `cargo fmt --check`, `cargo check --all-targets`.
+  STEP imports back, a saved document opens back), `cargo fmt --check`,
+  `cargo check --all-targets`.
 
 ## Licence
 

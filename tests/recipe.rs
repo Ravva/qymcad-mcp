@@ -1,8 +1,8 @@
 //! Recipe checks: every op builds what it says and says its numbers.
 
 use qymcad_mcp::{
-    ArrayStep, BossHeight, BoxSize, ChamferDist, CircleSpec, ConeSize, CutHeight, CylinderSize, ExtrudeHeight, FilletRadius, HolePoint, HoleSize, McpSession, MirrorPlane, MoveBy, PrismSize, RecipeOp,
-    RectSize, RevolveSpec, SphereRadius, TorusSize,
+    ArrayStep, BossHeight, BoxSize, ChamferDist, CircleSpec, CircularSpec, ConeSize, CutHeight, CylinderSize, ExtrudeHeight, FilletRadius, HolePoint, HoleSize, ImportPath, LevelHeight, LoftShape,
+    LoftSpec, McpSession, MirrorPlane, MoveBy, PrismSize, RecipeOp, RectSize, RevolveSpec, SphereRadius, SplitSpec, TorusSize,
 };
 
 /// The measured volume is within `rel` of the exact one (tessellation is approximate).
@@ -221,6 +221,121 @@ fn a_move_shifts_the_extent() {
     let body = last_built(&mut session, &[RecipeOp::BoxOp(BoxSize { dx: 10.0, dy: 10.0, dz: 10.0 }), RecipeOp::Translate(MoveBy { dx: 5.0, dy: 0.0, dz: 0.0 })]);
     assert!((body.volume_mm3 - 1000.0).abs() < 1.0, "a moved box holds 1000 mm^3, measured {}", body.volume_mm3);
     assert!((body.min[0] - 0.0).abs() < 0.01 && (body.max[0] - 10.0).abs() < 0.01, "a move of 5 mm spans x 0 to 10, measured {:?} to {:?}", body.min, body.max);
+}
+
+/// A loft from 20 x 20 at z 0 to 10 x 10 at z 10 holds the frustum volume.
+#[test]
+fn a_loft_holds_its_frustum() {
+    let mut session = McpSession::new_empty();
+    let body = last_built(
+        &mut session,
+        &[
+            RecipeOp::RectSketch(RectSize { width: 20.0, height: 20.0 }),
+            RecipeOp::Level(LevelHeight { z: 10.0 }),
+            RecipeOp::RectSketch(RectSize { width: 10.0, height: 10.0 }),
+            RecipeOp::Loft(LoftSpec { sections: 2, shape: LoftShape::Ruled }),
+        ],
+    );
+    assert!(within(body.volume_mm3, 2333.33, 0.03), "a loft holds 2333 mm^3, measured {}", body.volume_mm3);
+}
+
+/// A loft of one section is refused: two at least.
+#[test]
+fn a_loft_of_one_is_refused() {
+    let mut session = McpSession::new_empty();
+    let message =
+        session.apply(&[RecipeOp::RectSketch(RectSize { width: 10.0, height: 10.0 }), RecipeOp::Loft(LoftSpec { sections: 1, shape: LoftShape::Ruled })]).expect_err("a loft of one builds nothing");
+    assert!(message.contains("mcp-loft-sections"), "the refusal names its cause: {message}");
+}
+
+/// A loft of more sections than sketches is refused with both counts.
+#[test]
+fn a_loft_beyond_sketches_is_refused() {
+    let mut session = McpSession::new_empty();
+    let message = session
+        .apply(&[RecipeOp::RectSketch(RectSize { width: 10.0, height: 10.0 }), RecipeOp::Loft(LoftSpec { sections: 3, shape: LoftShape::Smooth })])
+        .expect_err("a loft of three from one builds nothing");
+    assert!(message.contains("mcp-loft-sections"), "the refusal names its cause: {message}");
+}
+
+/// Four boxes around Z hold four boxes.
+#[test]
+fn a_circular_array_holds_its_copies() {
+    let mut session = McpSession::new_empty();
+    let body = last_built(
+        &mut session,
+        &[
+            RecipeOp::BoxOp(BoxSize { dx: 10.0, dy: 10.0, dz: 10.0 }),
+            RecipeOp::Translate(MoveBy { dx: 10.0, dy: 0.0, dz: 0.0 }),
+            RecipeOp::CircularArray(CircularSpec { count: 4, angle_deg: 360.0 }),
+        ],
+    );
+    assert!(within(body.volume_mm3, 4000.0, 0.02), "four boxes hold 4000 mm^3, measured {}", body.volume_mm3);
+}
+
+/// A circular array of zero copies is refused.
+#[test]
+fn a_circular_array_of_zero_is_refused() {
+    let mut session = McpSession::new_empty();
+    let message =
+        session.apply(&[RecipeOp::BoxOp(BoxSize { dx: 10.0, dy: 10.0, dz: 10.0 }), RecipeOp::CircularArray(CircularSpec { count: 0, angle_deg: 360.0 })]).expect_err("zero copies build nothing");
+    assert!(message.contains("mcp-circular-count"), "the refusal names its field: {message}");
+}
+
+/// A split of a 10 mm box at z 5 parts it into halves.
+#[test]
+fn a_split_parts_the_box() {
+    let mut session = McpSession::new_empty();
+    let result = session.apply(&[RecipeOp::BoxOp(BoxSize { dx: 10.0, dy: 10.0, dz: 10.0 }), RecipeOp::SplitBody(SplitSpec { plane: 0, offset: 5.0 })]).expect("a split builds");
+    assert!(result.errors.is_empty(), "a clean split reports no errors: {:?}", result.errors);
+    assert_eq!(result.bodies.len(), 3, "the consumed source plus its two halves are listed");
+    let halves: f64 = result.bodies[1..].iter().map(|b| b.volume_mm3).sum();
+    assert!((halves - 1000.0).abs() < 10.0, "two halves hold 1000 mm^3, measured {halves}");
+}
+
+/// A split about no world plane is refused with its field.
+#[test]
+fn a_split_about_nowhere_is_refused() {
+    let mut session = McpSession::new_empty();
+    let message =
+        session.apply(&[RecipeOp::BoxOp(BoxSize { dx: 10.0, dy: 10.0, dz: 10.0 }), RecipeOp::SplitBody(SplitSpec { plane: 9, offset: 5.0 })]).expect_err("a split about plane 9 builds nothing");
+    assert!(message.contains("mcp-split-plane"), "the refusal names its field: {message}");
+}
+
+/// A STEP file comes in as a part with its volume.
+#[test]
+fn a_step_file_comes_in() {
+    let dir = std::env::temp_dir();
+    let step = dir.join("qymcad_mcp_import.step").to_string_lossy().to_string();
+    let mut first = McpSession::new_empty();
+    first.apply(&[RecipeOp::BoxOp(BoxSize { dx: 10.0, dy: 10.0, dz: 10.0 })]).expect("a box builds");
+    first.export_step(&step).expect("STEP exports");
+    let mut session = McpSession::new_empty();
+    let result = session.apply(&[RecipeOp::ImportStep(ImportPath { path: step.clone() })]).expect("STEP imports");
+    assert!(result.errors.is_empty(), "a clean import reports no errors: {:?}", result.errors);
+    assert_eq!(result.bodies.len(), 1, "one solid comes in as one body");
+    assert!((result.bodies[0].volume_mm3 - 1000.0).abs() < 20.0, "an imported box holds 1000 mm^3, measured {}", result.bodies[0].volume_mm3);
+    let _ = std::fs::remove_file(&step);
+}
+
+/// A missing import file is refused with its path.
+#[test]
+fn a_missing_import_is_refused() {
+    let mut session = McpSession::new_empty();
+    let message = session.apply(&[RecipeOp::ImportStep(ImportPath { path: "qymcad_mcp_no_such_file.step".into() })]).expect_err("a missing file imports nothing");
+    assert!(message.contains("mcp-import-read"), "the refusal names its cause: {message}");
+}
+
+/// A text file is no STEP and is refused by its extension.
+#[test]
+fn a_text_import_is_refused() {
+    let dir = std::env::temp_dir().join("qymcad_mcp_note.txt");
+    std::fs::write(&dir, "no step here").expect("a note writes");
+    let path = dir.to_string_lossy().to_string();
+    let mut session = McpSession::new_empty();
+    let message = session.apply(&[RecipeOp::ImportStep(ImportPath { path: path.clone() })]).expect_err("a text file imports nothing");
+    assert!(message.contains("mcp-import-format"), "the refusal names its cause: {message}");
+    let _ = std::fs::remove_file(&path);
 }
 
 /// An extrude with no sketch says so instead of building nothing.

@@ -9,8 +9,8 @@
 //! so no viewport click is ever required. Dress-up ops consume their source body, base ops
 //! are united into the part by `finish_base_body`.
 
-use qymcad_core::feature::Purpose;
-use qymcad_core::model::{HoleTool, Id, Project};
+use qymcad_core::feature::{Purpose, SketchPlane};
+use qymcad_core::model::{HoleTool, Id, ImportNode, PlaneDef, Project, WorkPlane};
 use serde::{Deserialize, Serialize};
 
 /// A size along three axes, in mm. One struct rather than three loose `f64`.
@@ -146,6 +146,47 @@ pub struct MoveBy {
     pub dz: f64,
 }
 
+/// The sketch level: the height later sketches are drawn at, in mm.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LevelHeight {
+    pub z: f64,
+}
+
+/// Ruled or smooth walls between loft sections: a switch, so an enum.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoftShape {
+    Ruled,
+    Smooth,
+}
+
+/// A loft through the last `sections` profile sketches.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LoftSpec {
+    pub sections: u32,
+    pub shape: LoftShape,
+}
+
+/// Copies of the last body about world Z, original included.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CircularSpec {
+    pub count: u32,
+    pub angle_deg: f64,
+}
+
+/// A split of the last body by a world plane (0 XY, 1 XZ, 2 YZ) shifted along its
+/// normal. The stock must part into exactly two.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SplitSpec {
+    pub plane: u8,
+    pub offset: f64,
+}
+
+/// An exact file brought in as new parts: STEP or IGES by extension.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportPath {
+    pub path: String,
+}
+
 /// One step of a recipe. A closed enum rather than a stringly-typed call.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum RecipeOp {
@@ -188,6 +229,16 @@ pub enum RecipeOp {
     Mirror(MirrorPlane),
     /// Move the last body rigidly.
     Translate(MoveBy),
+    /// Draw later sketches at this height. Sketches stand on datum planes there.
+    Level(LevelHeight),
+    /// Loft through the last sections profile sketches.
+    Loft(LoftSpec),
+    /// A circular pattern of the last body about world Z.
+    CircularArray(CircularSpec),
+    /// Split the last body by a world plane into two.
+    SplitBody(SplitSpec),
+    /// Bring a STEP or IGES file in as new parts.
+    ImportStep(ImportPath),
 }
 
 /// What a sketch holds: a closed profile for tools, or points placing holes.
@@ -238,6 +289,10 @@ pub struct McpSession {
     project: Project,
     last_sketch: Option<SketchRef>,
     last_body: Option<Id>,
+    /// Profile sketches in creation order, for lofts spanning several of them.
+    profiles: Vec<Id>,
+    /// The height later sketches are drawn at, through datum planes.
+    level_z: f64,
 }
 
 /// How many copies a pattern may hold: enough for any real part, too few to hang the kernel.
@@ -248,7 +303,7 @@ impl McpSession {
     pub fn new_empty() -> Self {
         let mut project = Project::default();
         project.new_document();
-        Self { project, last_sketch: None, last_body: None }
+        Self { project, last_sketch: None, last_body: None, profiles: Vec::new(), level_z: 0.0 }
     }
 
     /// Open a `.qcad` file exactly as the window sees it: imports restored, full rebuild.
@@ -256,7 +311,7 @@ impl McpSession {
         let mut project = qymcad_io::load_project(path)?;
         qymcad_testkit::open_like_the_app(&mut project);
         let last_body = project.bodies.last().map(|b| b.id);
-        Ok(Self { project, last_sketch: None, last_body })
+        Ok(Self { project, last_sketch: None, last_body, profiles: Vec::new(), level_z: 0.0 })
     }
 
     /// Save the document as `.qcad`.
@@ -356,10 +411,15 @@ impl McpSession {
         self.last_body.ok_or_else(|| missing.to_string())
     }
 
-    /// A fresh sketch with a timeline node, returning its index and id.
+    /// A fresh sketch with a timeline node, returning its index and id. Above z = 0 the
+    /// sketch stands on a datum plane at the current level, which is what lofts span.
     fn fresh_sketch(&mut self) -> (usize, Id) {
         let si = self.project.new_sketch("mcp-sketch");
         let sid = self.project.sketches[si].id;
+        if self.level_z != 0.0 {
+            let plane = self.project.add_plane(WorkPlane { id: 0, name: "mcp-level".into(), origin: [0.0, 0.0, self.level_z], normal: [0.0, 0.0, 1.0], rot_deg: 0.0, def: PlaneDef::Manual });
+            self.project.sketches[si].plane = SketchPlane::Datum(plane);
+        }
         self.project.add_sketch_node(sid, "mcp-sketch");
         (si, sid)
     }
@@ -420,6 +480,7 @@ impl McpSession {
                 self.project.add_rect_entity(si, -hw, -hh, hw, hh, Purpose::Real);
                 self.project.regen_sketch(si);
                 self.last_sketch = Some(SketchRef { id: sid, kind: SketchKind::Profile });
+                self.profiles.push(sid);
                 Ok(())
             }
             RecipeOp::CircleSketch(spec) => {
@@ -430,6 +491,7 @@ impl McpSession {
                 self.project.add_circle_entity(si, spec.x, spec.y, spec.r, Purpose::Real);
                 self.project.regen_sketch(si);
                 self.last_sketch = Some(SketchRef { id: sid, kind: SketchKind::Profile });
+                self.profiles.push(sid);
                 Ok(())
             }
             RecipeOp::HoleSketch(point) => {
@@ -524,11 +586,77 @@ impl McpSession {
                 self.last_body = Some(self.project.add_move(src, mat));
                 Ok(())
             }
+            RecipeOp::Level(spec) => {
+                accept_finite("mcp-level-z", spec.z)?;
+                self.level_z = spec.z;
+                Ok(())
+            }
+            RecipeOp::Loft(spec) => {
+                if spec.sections < 2 {
+                    return Err(format!("mcp-loft-sections#{}", spec.sections));
+                }
+                if spec.sections as usize > self.profiles.len() {
+                    return Err(format!("mcp-loft-sections#{}of{}", spec.sections, self.profiles.len()));
+                }
+                let at = self.profiles.len() - spec.sections as usize;
+                let sections: Vec<Id> = self.profiles[at..].to_vec();
+                let ruled = matches!(spec.shape, LoftShape::Ruled);
+                let body = self.project.add_loft(sections, Vec::new(), ruled, 0, 0, false);
+                self.last_body = Some(self.project.finish_base_body(body, 1));
+                Ok(())
+            }
+            RecipeOp::CircularArray(spec) => {
+                if spec.count < 1 || spec.count > MAX_ARRAY_COUNT {
+                    return Err(format!("mcp-circular-count#{}", spec.count));
+                }
+                reject_non_positive("mcp-circular-angle", spec.angle_deg)?;
+                let src = self.stock_body("mcp-circular-without-body")?;
+                self.last_body = Some(self.project.add_circular_array_axis(src, spec.count, spec.angle_deg, 0));
+                Ok(())
+            }
+            RecipeOp::SplitBody(spec) => {
+                if spec.plane > 2 {
+                    return Err(format!("mcp-split-plane#{}", spec.plane));
+                }
+                accept_finite("mcp-split-offset", spec.offset)?;
+                let src = self.stock_body("mcp-split-without-body")?;
+                let pieces = self.project.add_split_body(src, spec.plane, 0, spec.offset, 2);
+                self.last_body = pieces.last().copied();
+                Ok(())
+            }
+            RecipeOp::ImportStep(spec) => {
+                let data = std::fs::read(&spec.path).map_err(|e| format!("mcp-import-read#{}: {e}", spec.path))?;
+                let ext = std::path::Path::new(&spec.path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+                if !["step", "stp", "igs", "iges"].contains(&ext.as_str()) {
+                    return Err(format!("mcp-import-format#{ext}"));
+                }
+                let format = qymcad_kernel::ExactFormat::of_extension(&ext);
+                let (built, _shapes) = qymcad_kernel::read_exact(format, &spec.path, 0.1).map_err(|e| format!("mcp-import-parse#{e}"))?;
+                if built.is_empty() {
+                    return Err("mcp-import-empty".to_string());
+                }
+                let stem = file_stem(&spec.path);
+                let source = self.project.add_source(stem.clone(), data);
+                let count = built.len();
+                let mut last = None;
+                for (k, solid) in built.into_iter().enumerate() {
+                    let bid = self.project.add_mesh(solid.mesh);
+                    self.project.set_body_faces(bid, solid.faces);
+                    let name = if count == 1 { stem.clone() } else { format!("{stem} {}", k + 1) };
+                    self.project.import_tree_as_parts(vec![ImportNode { name, body: Some(bid), solid: k as u32, ..Default::default() }], source, &stem);
+                    last = Some(bid);
+                }
+                self.last_body = last;
+                Ok(())
+            }
         }
     }
 
     fn rebuild(&mut self) -> Result<RecipeResult, String> {
-        let (report, _shapes) = qymcad_testkit::regenerate(&mut self.project);
+        // Imports raise their live shapes from the embedded sources, exactly as on opening:
+        // without sources this is the plain regenerate.
+        let shapes = qymcad_testkit::restore_import_shapes(&self.project);
+        let (report, _shapes) = qymcad_testkit::regenerate_with_shapes(&mut self.project, shapes);
         let errors: Vec<String> = report.errors.iter().map(|(id, err)| format!("node {id}: {err:?}")).collect();
         if self.project.bodies.is_empty() {
             return Err("mcp-recipe-built-nothing".to_string());
@@ -586,5 +714,14 @@ fn accept_finite(field: &str, value: f64) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("{field}#{value}"))
+    }
+}
+
+/// The file name without its folder and extension, for part and source names.
+fn file_stem(path: &str) -> String {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    match base.rfind('.') {
+        Some(at) => base[..at].to_string(),
+        None => base.to_string(),
     }
 }
