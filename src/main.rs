@@ -41,17 +41,22 @@ fn handle_line(line: &str, session: &mut McpSession) -> String {
     }
 }
 
-/// The eight tools of the first release.
+/// The thirteen tools of this release.
 fn tool_list() -> Vec<serde_json::Value> {
     let tool = |name: &str, about: &str| serde_json::json!({"name": name, "description": about, "inputSchema": {"type": "object"}});
     vec![
         tool("new_project", "Start an empty document with one part"),
         tool("open_project", "Open a .qcad file with a full rebuild"),
         tool("save_project", "Save the document as .qcad"),
-        tool("apply_recipe", "Build Box/RectSketch/Extrude/Fillet ops in order and rebuild once"),
+        tool("apply_recipe", "Build recipe ops in order (primitives, sketches, extrude, revolve, cut, boss, fillets, holes, arrays, mirror, move) and rebuild once"),
         tool("inspect", "Count parts, bodies, sketches and nodes with measured body numbers"),
         tool("measure", "Measured numbers of every body without rebuilding"),
         tool("export_stl", "Write display meshes as binary STL"),
+        tool("export_obj", "Write display meshes as Wavefront OBJ"),
+        tool("export_ply", "Write display meshes as PLY"),
+        tool("export_glb", "Write display meshes as binary glTF"),
+        tool("export_3mf", "Write display meshes as 3MF"),
+        tool("export_amf", "Write display meshes as AMF"),
         tool("export_step", "Rebuild and write the live B-rep as STEP"),
     ]
 }
@@ -90,9 +95,17 @@ fn call_tool(id: &serde_json::Value, params: &serde_json::Value, session: &mut M
             }
         }
         "inspect" | "measure" => ok(id, serde_json::to_value(session.inspect()).unwrap_or(serde_json::Value::Null)),
-        "export_stl" => {
+        "export_stl" | "export_obj" | "export_ply" | "export_glb" | "export_3mf" | "export_amf" => {
             let path = args.get("path").and_then(|p| p.as_str()).unwrap_or("");
-            match session.export_stl(path) {
+            let done = match name {
+                "export_stl" => session.export_stl(path),
+                "export_obj" => session.export_obj(path),
+                "export_ply" => session.export_ply(path),
+                "export_glb" => session.export_glb(path),
+                "export_3mf" => session.export_3mf(path),
+                _ => session.export_amf(path),
+            };
+            match done {
                 Ok(()) => ok(id, serde_json::json!({"ok": true})),
                 Err(message) => err(id, -32000, &message),
             }

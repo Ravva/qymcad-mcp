@@ -50,12 +50,23 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | cargo run -q
 | `inspect` | — | Parts, bodies, sketches, nodes, with body numbers |
 | `measure` | — | Measured numbers of every body without rebuilding |
 | `export_stl` | `path` | Write display meshes as binary STL |
+| `export_obj` | `path` | Write display meshes as Wavefront OBJ |
+| `export_ply` | `path` | Write display meshes as PLY |
+| `export_glb` | `path` | Write display meshes as binary glTF |
+| `export_3mf` | `path` | Write display meshes as 3MF |
+| `export_amf` | `path` | Write display meshes as AMF |
 | `export_step` | `path` | Rebuild and write the live B-rep as STEP |
 
-Recipe ops: `BoxOp {dx, dy, dz}`, `RectSketch {width, height}` (a rectangle on XY
-centred at the origin), `Extrude {height}`, `Fillet {radius}` (every edge of the last
-body). All sizes are finite positive millimetres; a refusal names its field
-(`mcp-rect-size`, `mcp-extrude-without-sketch`, ...).
+Recipe ops: primitives `BoxOp`/`CylinderOp`/`SphereOp`/`ConeOp` (zero top radius is an
+apex)/`TorusOp`/`PrismOp`; sketches `RectSketch`/`CircleSketch` (off-centre circles
+build bodies of revolution) and `HoleSketch` (one isolated point — keep clear of the
+origin and other geometry, which weld the point into themselves); `Extrude`/`Revolve`
+(about X or Y)/`Cut`/`Boss`; dress-ups `Fillet`/`Chamfer` on every edge; `Hole` (drills
+up from the sketch plane into the stock standing above it); `LinearArray` (at most
+1000 copies); `Mirror` about a world plane, merged; `Translate`.
+All sizes are finite positive millimetres; a refusal names its field
+(`mcp-rect-size`, `mcp-extrude-without-sketch`, ...). Shells need picked faces, which a
+headless recipe has no way to point at, so there is no shell op.
 
 ## Example
 
@@ -80,7 +91,7 @@ layer. Update QymCAD to a build at or past the pinned revision above.
 
 - Live B-rep shapes never leave the process; only numbers and files cross the wire.
 - Error codes are machine-readable English keys, no interface strings.
-- Checks: `cargo test` (a rect extruded holds its volume, refusals name their cause,
+- Checks: `cargo test` (every op holds its volume, refusals name their cause,
   a saved document opens back), `cargo fmt --check`, `cargo check --all-targets`.
 
 ## Licence
